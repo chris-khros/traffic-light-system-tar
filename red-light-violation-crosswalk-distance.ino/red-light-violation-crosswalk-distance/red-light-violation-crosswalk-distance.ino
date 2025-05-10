@@ -2,9 +2,9 @@
 #include <PubSubClient.h>
 
 // ——— Wi-Fi & MQTT ——————————————————————
-const char* ssid        = "chinkonfatt-2.4G";
-const char* password    = "50105189";
-const char* mqtt_server = "192.168.0.104";
+const char* ssid        = "Chris";
+const char* password    = "123456789";
+const char* mqtt_server = "172.20.10.4";
 
 WiFiClient   wifiClient;
 PubSubClient mqtt(wifiClient);

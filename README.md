@@ -38,12 +38,9 @@ pip install opencv-python numpy paho-mqtt firebase-admin pillow
    - `traffic-light-system-3rd-esp.ino` to the traffic light controller ESP32
    - `red-light-violation-crosswalk-distance.ino` to the violation detection ESP32
 
-3. Configure the MQTT broker (default: 192.168.0.104) on all devices
+3. Configure the MQTT broker (IP) on all devices
 
 4. Ensure Firebase credentials are properly set up (use the provided JSON file)
-
-5.  npm install
-    npm run
 
 ## Usage
 
@@ -73,10 +70,6 @@ python traffic_system_ui.py
 - `traffic/distance`: Vehicle distance measurements
 - `traffic/crosswalk`: Pedestrian crosswalk status
 - `traffic/override`: Manual override commands
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
 
 ## Acknowledgments
 

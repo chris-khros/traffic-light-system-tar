@@ -2,9 +2,9 @@
 #include <PubSubClient.h>
 
 // ——— Wi-Fi & MQTT ——————————————————————
-const char* ssid        = "chinkonfatt-2.4G";
-const char* password    = "50105189";
-const char* mqtt_server = "192.168.0.104";
+const char* ssid        = "Chris";
+const char* password    = "123456789";
+const char* mqtt_server = "172.20.10.4";
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -28,10 +28,13 @@ const int red2    = 5;    // Vertical red
 const unsigned long yellowDuration = 3000;   // 3s yellow
 const unsigned long minGreen      = 5000;   // 5s minimum green
 const unsigned long maxGreen      = 20000;  // 20s maximum green
+const unsigned long densityPublishInterval = 1000; // 1s between density updates
+unsigned long lastDensityPublish = 0;
 
 // State machine phases
 enum Phase { H_GREEN=0, H_YELLOW, V_GREEN, V_YELLOW };
 Phase currentPhase = H_GREEN;
+bool pedestrianWaiting = false;
 
 unsigned long phaseStart = 0;
 
@@ -39,6 +42,7 @@ unsigned long phaseStart = 0;
 const char* topicDensity    = "traffic/density";
 const char* topicPhase      = "traffic/phase";
 const char* topicOverride   = "traffic/override";
+const char* topicCrosswalk  = "traffic/crosswalk";
 
 // ——— MQTT Callback ——————————————————————
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
@@ -47,7 +51,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   for (int i = 0; i < length; i++) msg += char(payload[i]);
   Serial.printf("MQTT ← %s : %s\n", topic, msg.c_str());
 
-  // Example override: if payload == "H_GREEN" force it
+  // Handle override commands
   if (String(topic) == topicOverride) {
     if (msg == "H_GREEN")      currentPhase = H_GREEN;
     else if (msg == "H_YELLOW") currentPhase = H_YELLOW;
@@ -55,6 +59,28 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     else if (msg == "V_YELLOW") currentPhase = V_YELLOW;
     phaseStart = millis();
     applyPhase(currentPhase);
+  }
+  
+  // Handle crosswalk notifications
+  else if (String(topic) == topicCrosswalk) {
+    if (msg == "PEDESTRIAN_WAITING") {
+      pedestrianWaiting = true;
+      Serial.println("Pedestrian waiting detected - will prioritize vertical green");
+      
+      // If we're in horizontal green, we should transition to yellow soon
+      if (currentPhase == H_GREEN) {
+        // Only force transition if we've been in this phase for at least minimum time
+        unsigned long elapsed = millis() - phaseStart;
+        if (elapsed >= minGreen) {
+          currentPhase = H_YELLOW;
+          phaseStart = millis();
+          applyPhase(currentPhase);
+        }
+      }
+    }
+    else if (msg == "CROSSWALK_CLEAR") {
+      pedestrianWaiting = false;
+    }
   }
 }
 
@@ -65,11 +91,8 @@ void setup() {
   client.setServer(mqtt_server, 1883);
   client.setCallback(mqttCallback);
 
-  // Subscribe to override topic
-  if (client.connect("ESP32Client3")) {
-    client.subscribe(topicOverride);
-    Serial.println("MQTT → Subscribed to override");
-  }
+  // Connect and subscribe
+  reconnect();
 
   // IR sensors
   pinMode(ir1, INPUT);
@@ -85,6 +108,7 @@ void setup() {
   digitalWrite(red1, HIGH);
   digitalWrite(red2, HIGH);
   phaseStart = millis();
+  lastDensityPublish = millis();
 }
 
 void setup_wifi() {
@@ -102,16 +126,21 @@ void loop() {
   if (!client.connected()) reconnect();
   client.loop();
 
+  unsigned long now = millis();
+
   // read densities
   int horCount = (digitalRead(ir1)==LOW) + (digitalRead(ir2)==LOW);
   int verCount = (digitalRead(ir3)==LOW) + (digitalRead(ir4)==LOW);
 
-  // Publish density as JSON-like string
-  char buf[64];
-  snprintf(buf, sizeof(buf), "{\"H\":%d,\"V\":%d}", horCount, verCount);
-  client.publish(topicDensity, buf);
+  // Publish density at regular intervals (not every loop)
+  if (now - lastDensityPublish >= densityPublishInterval) {
+    // Publish density as JSON-like string
+    char buf[64];
+    snprintf(buf, sizeof(buf), "{\"H\":%d,\"V\":%d}", horCount, verCount);
+    client.publish(topicDensity, buf);
+    lastDensityPublish = now;
+  }
 
-  unsigned long now = millis();
   unsigned long elapsed = now - phaseStart;
   unsigned long phaseDuration = getPhaseDuration(currentPhase, horCount, verCount);
 
@@ -121,6 +150,11 @@ void loop() {
     currentPhase = Phase((currentPhase + 1) % 4);
     phaseStart = now;
     applyPhase(currentPhase);
+    
+    // Reset pedestrian waiting flag if we've reached V_GREEN
+    if (currentPhase == V_GREEN) {
+      pedestrianWaiting = false;
+    }
   }
 }
 
@@ -128,10 +162,21 @@ void loop() {
 unsigned long getPhaseDuration(Phase ph, int hCount, int vCount) {
   switch(ph) {
     case H_GREEN:
-      // stay green between min and max based on traffic
-      return constrain( minGreen + hCount*2000, minGreen, maxGreen );
+      // If pedestrian is waiting, use minimum green time
+      if (pedestrianWaiting) {
+        return minGreen;
+      }
+      // Otherwise stay green between min and max based on traffic
+      return constrain(minGreen + hCount*2000, minGreen, maxGreen);
+    
     case V_GREEN:
-      return constrain( minGreen + vCount*2000, minGreen, maxGreen );
+      // If pedestrian is waiting, use maximum green time to allow crossing
+      if (pedestrianWaiting) {
+        return maxGreen;
+      }
+      // Otherwise base on traffic density
+      return constrain(minGreen + vCount*2000, minGreen, maxGreen);
+    
     case H_YELLOW:
     case V_YELLOW:
       return yellowDuration;
@@ -174,16 +219,28 @@ void applyPhase(Phase ph) {
       break;
   }
 
-    // *** Publish retained phase immediately ***
+  // *** Publish retained phase immediately ***
   client.publish(topicPhase, phaseStr, true);
   Serial.printf("Published phase → %s\n", phaseStr);
 }
 
 void reconnect() {
-  while (!client.connected()) {
+  int attempts = 0;
+  while (!client.connected() && attempts < 5) {
+    attempts++;
     Serial.print("MQTT → ");
-    if (client.connect("ESP32Client3")) {
+    // Create a unique client ID
+    String clientId = "ESP32Client3-";
+    clientId += String(random(0xffff), HEX);
+    
+    if (client.connect(clientId.c_str())) {
       Serial.println("Connected");
+      
+      // Subscribe to relevant topics
+      client.subscribe(topicOverride);
+      client.subscribe(topicCrosswalk);
+      
+      Serial.println("MQTT → Subscribed to topics");
     } else {
       Serial.print("Failed rc=");
       Serial.print(client.state());
