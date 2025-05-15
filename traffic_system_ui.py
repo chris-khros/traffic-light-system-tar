@@ -29,7 +29,7 @@ class TrafficSystemUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Smart Traffic Light System")
-        self.root.geometry("1200x800")
+        self.root.geometry("1400x900")
         self.root.resizable(True, True)
         
         # Initialize camera to None first
@@ -115,6 +115,11 @@ class TrafficSystemUI:
         
         if topic == 'traffic/phase':
             self.traffic_phase = payload
+            # Update crosswalk status based on phase
+            if payload in ["H_GREEN", "H_YELLOW"]:
+                self.crosswalk_status = "Clear"
+            elif payload in ["V_GREEN", "V_YELLOW"]:
+                self.crosswalk_status = "Not Clear"
         
         elif topic == 'traffic/density':
             try:
@@ -132,7 +137,14 @@ class TrafficSystemUI:
                 print(f"Invalid JSON in distance data: {payload}")
         
         elif topic == 'traffic/crosswalk':
-            self.crosswalk_status = payload
+            if payload == "PEDESTRIAN_WAITING":
+                self.crosswalk_status = "Pedestrian Waiting"
+            elif payload == "CROSSWALK_CLEAR":
+                # Only update to Clear if we're in horizontal phase
+                if self.traffic_phase in ["H_GREEN", "H_YELLOW"]:
+                    self.crosswalk_status = "Clear"
+                else:
+                    self.crosswalk_status = "Not Clear"
         
         elif topic == 'traffic/violation':
             if payload == 'RED_VIOLATION':
@@ -144,6 +156,9 @@ class TrafficSystemUI:
         if self.cam is None:
             print("Camera not available for capturing violation")
             return
+        
+        # Add 150ms delay before capturing
+        time.sleep(0.15)  # 150ms delay
             
         ret, frame = self.cam.read()
         if not ret:
@@ -156,16 +171,11 @@ class TrafficSystemUI:
         cv2.imwrite(filename, frame)
         print(f"Saved violation image to {filename}")
         
-        # Detect color
-        color = self.better_simple_color_detect(frame)
-        print(f"Detected vehicle color: {color}")
-        
         # Upload to Firebase
-        self.upload_violation(color, filename)
+        self.upload_violation(filename)
         
         # Update violations list
         violation_entry = {
-            'color': color,
             'date': now.strftime("%Y-%m-%d"),
             'time': now.strftime("%H:%M:%S"),
             'image_filename': filename
@@ -175,43 +185,11 @@ class TrafficSystemUI:
         # Update the violations text area
         self.update_violations_list()
 
-    def better_simple_color_detect(self, image):
-        """Simple color detection focusing on center of image"""
-        h, w, _ = image.shape
-        center_crop = image[h//3:h*2//3, w//3:w*2//3]
-        
-        # Increase brightness slightly
-        center_crop = cv2.convertScaleAbs(center_crop, alpha=1.2, beta=30)
-        
-        # Average color
-        avg_color_per_row = np.average(center_crop, axis=0)
-        avg_color = np.average(avg_color_per_row, axis=0)
-        
-        b, g, r = avg_color
-        print(f"Average BGR values: {b:.2f}, {g:.2f}, {r:.2f}")
-        
-        # Thresholds
-        if r > 120 and r > g + 30 and r > b + 30:
-            return "Red"
-        elif b > 120 and b > r + 30 and b > g + 30:
-            return "Blue"
-        elif g > 120 and g > r + 30 and g > b + 30:
-            return "Green"
-        elif r > 150 and g > 150 and b < 100:
-            return "Yellow"
-        elif r < 80 and g < 80 and b < 80:
-            return "Black"
-        elif r > 180 and g > 180 and b > 180:
-            return "White"
-        else:
-            return "Unknown"
-
-    def upload_violation(self, color_detected, image_filename):
+    def upload_violation(self, image_filename):
         """Upload violation details to Firebase"""
         try:
             now = datetime.now()
             data = {
-                'color': color_detected,
                 'date': now.strftime("%Y-%m-%d"),
                 'time': now.strftime("%H:%M:%S"),
                 'image_filename': image_filename
@@ -230,7 +208,7 @@ class TrafficSystemUI:
         
         # Create left panel (traffic light status and controls)
         left_panel = ttk.LabelFrame(main_frame, text="Traffic Control System", padding="10")
-        left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=5, pady=5)
         
         # Traffic light status
         status_frame = ttk.LabelFrame(left_panel, text="Current Status", padding="10")
@@ -307,19 +285,25 @@ class TrafficSystemUI:
         
         # Camera feed
         camera_frame = ttk.LabelFrame(right_panel, text="Camera Feed", padding="10")
-        camera_frame.pack(fill=tk.X, pady=5)
+        camera_frame.pack(fill=tk.BOTH, expand=True, pady=5)
         
-        self.camera_label = ttk.Label(camera_frame)
-        self.camera_label.pack(pady=5)
+        # Camera controls frame
+        camera_controls = ttk.Frame(camera_frame)
+        camera_controls.pack(fill=tk.X, pady=5)
         
-        # Camera selection UI
-        camera_select_frame = ttk.Frame(camera_frame)
-        camera_select_frame.pack(fill=tk.X, pady=5)
-        ttk.Label(camera_select_frame, text="Camera Index:").pack(side=tk.LEFT, padx=(0, 5))
-        self.camera_index_entry = ttk.Entry(camera_select_frame, width=5)
+        # Camera selection
+        ttk.Label(camera_controls, text="Camera Index:").pack(side=tk.LEFT, padx=(0, 5))
+        self.camera_index_entry = ttk.Entry(camera_controls, width=5)
         self.camera_index_entry.insert(0, str(self.camera_index))
         self.camera_index_entry.pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Button(camera_select_frame, text="Change Camera", command=self.change_camera).pack(side=tk.LEFT)
+        ttk.Button(camera_controls, text="Change Camera", command=self.change_camera).pack(side=tk.LEFT, padx=(0, 10))
+        
+        # Camera feed container
+        self.camera_container = ttk.Frame(camera_frame)
+        self.camera_container.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        self.camera_label = ttk.Label(self.camera_container)
+        self.camera_label.pack(fill=tk.BOTH, expand=True)
         
         # Violations list
         violations_frame = ttk.LabelFrame(right_panel, text="Violations", padding="10")
@@ -360,7 +344,7 @@ class TrafficSystemUI:
             return
             
         for v in self.violations:
-            entry = f"Date: {v.get('date', 'Unknown')} | Time: {v.get('time', 'Unknown')} | Color: {v.get('color', 'Unknown')}\n"
+            entry = f"Date: {v.get('date', 'Unknown')} | Time: {v.get('time', 'Unknown')}\n"
             self.violations_text.insert(tk.END, entry)
     
     def override_phase(self, phase):
@@ -427,47 +411,43 @@ class TrafficSystemUI:
         print("Camera loop started.")
         while not self.stop_camera_signal.is_set():
             if self.cam is None or not self.cam.isOpened():
-                # If camera is not available, clear the label and wait
                 if hasattr(self, 'camera_label') and self.camera_label.winfo_exists():
-                     # Check if an image is currently displayed
                     if self.camera_label.cget("image") != "":
                         self.camera_label.configure(image=None)
                         self.camera_label.imgtk = None
-                time.sleep(0.5) # Wait a bit before retrying or if no camera
+                time.sleep(0.5)
                 continue
 
             try:
                 ret, frame = self.cam.read()
                 if ret:
-                    # Resize frame for display
-                    frame_resized = cv2.resize(frame, (320, 240))
+                    # Resize frame for display (increased size)
+                    frame_resized = cv2.resize(frame, (640, 480))
+                    
                     # Convert to RGB for tkinter
                     cv2image = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
                     img = Image.fromarray(cv2image)
                     imgtk = ImageTk.PhotoImage(image=img)
                     
-                    # Update camera label only if it exists
                     if hasattr(self, 'camera_label') and self.camera_label.winfo_exists():
                         self.camera_label.imgtk = imgtk
                         self.camera_label.configure(image=imgtk)
                 else:
-                    # Frame not read successfully
                     print("Failed to read frame from camera.")
-                    # Optionally, clear the feed or show an error indicator
                     if hasattr(self, 'camera_label') and self.camera_label.winfo_exists():
-                        if self.camera_label.cget("image") != "": # Avoid constant configure if already cleared
-                           self.camera_label.configure(image=None)
-                           self.camera_label.imgtk = None
-                    time.sleep(0.1) # Wait a bit before trying again
+                        if self.camera_label.cget("image") != "":
+                            self.camera_label.configure(image=None)
+                            self.camera_label.imgtk = None
+                    time.sleep(0.1)
             except Exception as e:
                 print(f"Camera loop error: {str(e)}")
                 if hasattr(self, 'camera_label') and self.camera_label.winfo_exists():
                     if self.camera_label.cget("image") != "":
                         self.camera_label.configure(image=None)
                         self.camera_label.imgtk = None
-                time.sleep(0.5) # Wait after an error
+                time.sleep(0.5)
                 
-            time.sleep(0.03)  # Adjust for desired frame rate, e.g. ~30 FPS
+            time.sleep(0.03)  # ~30 FPS
         print("Camera loop stopped.")
 
     def update_ui(self):
@@ -485,8 +465,9 @@ class TrafficSystemUI:
         # Update crosswalk label
         self.crosswalk_label.config(text=self.crosswalk_status)
         
-        # Update white line warning label
-        if self.last_distance > 0 and self.last_distance <= 15:
+        # Update white line warning label - only for vertical red light
+        if (self.traffic_phase in ["H_GREEN", "H_YELLOW"] and  # Vertical lane has red light
+            self.last_distance > 0 and self.last_distance <= 15):
             self.white_line_warning_label.config(text="DANGER: Car past white line!")
         else:
             self.white_line_warning_label.config(text="")
